@@ -1,0 +1,27 @@
+{
+    "manifest_version": 3,
+    "name": "Enterprise AI Governance Shield",
+    "version": "1.0",
+    "description": "Intercepts LLM prompts to prevent data leakage and enforce enterprise AI policies.",
+    "permissions": [
+        "activeTab",
+        "scripting"
+    ],
+    "host_permissions": [
+        "*://chatgpt.com/*",
+        "http://localhost:8000/*"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "*://chatgpt.com/*"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ],
+    "background": {
+        "service_worker": "background.js"
+    }
+}
