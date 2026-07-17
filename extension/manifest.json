@@ -8,13 +8,13 @@
         "scripting"
     ],
     "host_permissions": [
-        "*://chatgpt.com/*",
+        "<all_urls>",
         "http://localhost:8000/*"
     ],
     "content_scripts": [
         {
             "matches": [
-                "*://chatgpt.com/*"
+                "<all_urls>"
             ],
             "js": [
                 "content.js"

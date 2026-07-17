@@ -45,32 +45,41 @@ function showGovernanceModal(title, message, safePrompt, chatInput) {
     });
 }
 
-// Listen for "Enter" key on the ChatGPT chatbox
-document.addEventListener("keydown", function (event) {
-    if (event.key === "Enter" && !event.shiftKey) {
-        // ChatGPT uses a div with id="prompt-textarea" now, but fallback to textarea just in case
-        const chatInput = document.querySelector('#prompt-textarea') || document.querySelector('textarea');
+// Check if current site is an AI tool before listening
+chrome.runtime.sendMessage({ action: "checkTool" }, function(response) {
+    if (response && response.is_ai_tool) {
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" && !event.shiftKey) {
+                // More robust input detection: target whatever the user is currently typing in
+                const activeElement = document.activeElement;
+                if (!activeElement) return;
+                
+                const isInput = activeElement.tagName.toLowerCase() === 'textarea' || 
+                                activeElement.isContentEditable || 
+                                activeElement.id === 'prompt-textarea';
 
-        if (chatInput && (document.activeElement === chatInput || chatInput.contains(document.activeElement))) {
-            const promptText = chatInput.value !== undefined ? chatInput.value : chatInput.innerText;
+                if (isInput) {
+                    const chatInput = activeElement;
+                    const promptText = chatInput.value !== undefined ? chatInput.value : chatInput.innerText;
 
-            if (promptText.trim().length > 0) {
-                event.preventDefault(); // Stop prompt from sending
-                event.stopPropagation();
+                    if (promptText.trim().length > 0) {
+                        event.preventDefault(); // Stop prompt from sending
+                        event.stopPropagation();
+                        
+                        // Briefly disable input while evaluating
+                        if (chatInput.tagName.toLowerCase() === 'textarea') {
+                            chatInput.disabled = true;
+                        } else {
+                            chatInput.setAttribute('contenteditable', 'false');
+                        }
 
-                if (chatInput.tagName.toLowerCase() === 'textarea') {
-                    chatInput.disabled = true;
-                } else {
-                    chatInput.setAttribute('contenteditable', 'false');
-                }
-
-                chrome.runtime.sendMessage({ action: "evaluatePrompt", text: promptText }, function (response) {
-                    if (chatInput.tagName.toLowerCase() === 'textarea') {
-                        chatInput.disabled = false;
-                    } else {
-                        chatInput.setAttribute('contenteditable', 'true');
-                        chatInput.focus();
-                    }
+                        chrome.runtime.sendMessage({ action: "evaluatePrompt", text: promptText }, function (response) {
+                            if (chatInput.tagName.toLowerCase() === 'textarea') {
+                                chatInput.disabled = false;
+                            } else {
+                                chatInput.setAttribute('contenteditable', 'true');
+                                chatInput.focus();
+                            }
 
                     if (response.status === "warning" || response.status === "blocked") {
                         showGovernanceModal("🛑 Policy Violation", response.reason, response.safe_prompt, chatInput);
@@ -88,4 +97,6 @@ document.addEventListener("keydown", function (event) {
             }
         }
     }
-}, true); // Capture phase
+        }, true); // Capture phase
+    }
+});

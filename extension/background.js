@@ -1,4 +1,13 @@
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "checkTool") {
+        const hostname = new URL(sender.tab.url).hostname;
+        fetch(`http://localhost:8000/api/v1/check-tool?url=${hostname}`)
+            .then(response => response.json())
+            .then(data => sendResponse(data))
+            .catch(error => sendResponse({ is_ai_tool: false }));
+        return true;
+    }
+
     if (request.action === "evaluatePrompt") {
         // Send the intercepted prompt to your local FastAPI Governance Engine
         fetch("http://localhost:8000/api/v1/evaluate-prompt", {

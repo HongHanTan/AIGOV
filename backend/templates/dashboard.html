@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Governance Admin Dashboard</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f4f7f6; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #2c3e50; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; color: #495057; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; display: inline-block; }
+        .badge.approved { background-color: #2ed573; }
+        .badge.pending { background-color: #ffa502; }
+        .badge.blocked { background-color: #ff4757; }
+        /* Handling the dynamic audit statuses */
+        .badge.blocked_shadow_ai, .badge.blocked_ethics { background-color: #ff4757; }
+        .badge.redacted_data { background-color: #1e90ff; }
+        button { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 12px; margin-right: 5px; }
+        .btn-approve { background-color: #2ed573; }
+        .btn-block { background-color: #ff4757; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Enterprise AI Governance Dashboard</h1>
+    
+    <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2>Tool Registry</h2>
+            <button class="btn-block" onclick="clearTools()">Clear All Tools</button>
+        </div>
+        <table>
+            <tr>
+                <th>URL</th>
+                <th>Justification</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+            {% for tool in tools %}
+            <tr>
+                <td>{{ tool.url }}</td>
+                <td>{{ tool.justification }}</td>
+                <td><span class="badge {{ tool.status }}">{{ tool.status }}</span></td>
+                <td>
+                    <button class="btn-approve" onclick="updateStatus('{{ tool.url }}', 'approved')">Approve</button>
+                    <button class="btn-block" onclick="updateStatus('{{ tool.url }}', 'blocked')">Block</button>
+                    <button style="background-color: #747d8c;" onclick="deleteTool('{{ tool.url }}')">Delete</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4">No tools registered yet.</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2>Recent Audit Logs</h2>
+            <button class="btn-block" onclick="clearLogs()">Clear All Logs</button>
+        </div>
+        <table>
+            <tr>
+                <th>Timestamp</th>
+                <th>User</th>
+                <th>Tool URL</th>
+                <th>Status</th>
+                <th>Prompt Snippet</th>
+                <th>Action</th>
+            </tr>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log.timestamp[:19] }}</td>
+                <td>{{ log.user_id }}</td>
+                <td>{{ log.url }}</td>
+                <td><span class="badge {{ log.status }}">{{ log.status }}</span></td>
+                <td>{{ log.prompt_text[:60] }}...</td>
+                <td><button style="background-color: #747d8c;" onclick="deleteLog({{ log.id }})">Delete</button></td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6">No audit logs found.</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+</div>
+
+<script>
+async function updateStatus(url, status) {
+    const formData = new FormData();
+    formData.append("url", url);
+    formData.append("status", status);
+
+    const res = await fetch("/api/v1/update-tool-status", {
+        method: "POST",
+        body: formData
+    });
+    if (res.ok) {
+        window.location.reload();
+    } else {
+        alert("Failed to update status");
+    }
+}
+
+async function deleteTool(url) {
+    if (!confirm("Are you sure you want to delete this tool?")) return;
+    const formData = new FormData();
+    formData.append("url", url);
+    const res = await fetch("/api/v1/delete-tool", { method: "POST", body: formData });
+    if (res.ok) window.location.reload();
+}
+
+async function clearTools() {
+    if (!confirm("Are you sure you want to clear all tools?")) return;
+    const res = await fetch("/api/v1/clear-tools", { method: "POST" });
+    if (res.ok) window.location.reload();
+}
+
+async function deleteLog(log_id) {
+    if (!confirm("Are you sure you want to delete this log?")) return;
+    const formData = new FormData();
+    formData.append("log_id", log_id);
+    const res = await fetch("/api/v1/delete-log", { method: "POST", body: formData });
+    if (res.ok) window.location.reload();
+}
+
+async function clearLogs() {
+    if (!confirm("Are you sure you want to clear all logs?")) return;
+    const res = await fetch("/api/v1/clear-logs", { method: "POST" });
+    if (res.ok) window.location.reload();
+}
+</script>
+</body>
+</html>
