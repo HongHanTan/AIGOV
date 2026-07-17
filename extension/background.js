@@ -25,4 +25,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         return true; // Keep channel open for async fetch
     }
+    
+    if (request.action === "logOutput") {
+        fetch("http://localhost:8000/api/v1/log-output", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                prompt_id: request.prompt_id,
+                response_text: request.response_text
+            })
+        }).catch(err => console.error("Failed to log output", err));
+        return true;
+    }
 });

@@ -3,11 +3,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 import re
 import datetime
 import spacy
+import httpx
+import json
 
 try:
     nlp = spacy.load("en_core_web_sm")
@@ -36,6 +38,14 @@ class ToolRegistry(Base):
     url = Column(String, unique=True, index=True)
     status = Column(String) # approved, pending, blocked
     justification = Column(String)
+    clearance_level = Column(String, default="PUBLIC") # PUBLIC, INTERNAL, CONFIDENTIAL
+
+class OutputLog(Base):
+    __tablename__ = "output_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("audit_logs.id"))
+    ai_response_text = Column(String)
+    timestamp = Column(String)
 
 Base.metadata.create_all(bind=engine)
 
@@ -52,7 +62,7 @@ app = FastAPI(title="Enterprise AI Governance API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For hackathon purposes
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -77,23 +87,44 @@ class DataProtectionGuardrail:
         redacted_text = self.pii_pattern.sub("[REDACTED_EMAIL]", text)
         redacted_text = re.sub(self.secret_project, "[REDACTED_COMPANY_SECRET]", redacted_text, flags=re.IGNORECASE)
         
+        has_sensitive = (redacted_text != text)
+        
         if nlp:
             doc = nlp(redacted_text)
             for ent in doc.ents:
                 if ent.label_ in ["PERSON", "ORG", "GPE", "LOC", "FAC"]:
                     redacted_text = redacted_text.replace(ent.text, f"[REDACTED_{ent.label_}]")
+                    has_sensitive = True
                     
-        return redacted_text
+        return redacted_text, has_sensitive
 
 # --- REPO 2 REFERENCE: AI Governance Framework (Risk & Ethics Agents) ---
 class RiskMonitoringAgents:
-    def evaluate_ethics_and_bias(self, text):
-        text_lower = text.lower()
-        if "hire only men" in text_lower or "filter out minorities" in text_lower:
-            return False, "SafetyAgent: Prompt violates anti-discrimination policies."
-        if "monitor employees covertly" in text_lower or "track keystrokes without telling" in text_lower:
-            return False, "EthicsAgent: Covert employee monitoring violates enterprise ethical boundaries."
-        return True, "Safe"
+    async def evaluate_ethics_and_bias(self, text):
+        system_prompt = """Evaluate the user's input for bias, unethical behavior, or covert monitoring. 
+        Strictly return a JSON object: {"is_ethical": boolean, "reason": "string"}."""
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "http://localhost:11434/api/generate",
+                    json={
+                        "model": "llama3", # default ollama model assumption
+                        "prompt": f"System: {system_prompt}\n\nUser: {text}",
+                        "stream": False,
+                        "format": "json"
+                    },
+                    timeout=10.0
+                )
+                if response.status_code == 200:
+                    data = response.json().get("response", "")
+                    parsed = json.loads(data)
+                    return parsed.get("is_ethical", True), parsed.get("reason", "Safe")
+                else:
+                    return True, "Safe (Ollama error)"
+        except Exception as e:
+            print(f"Ollama error: {e}")
+            return True, "Safe (Ollama unreachable)"
 
 guardrail = DataProtectionGuardrail()
 agents = RiskMonitoringAgents()
@@ -107,6 +138,10 @@ class ToolRequest(BaseModel):
     url: str
     justification: str
 
+class OutputRequest(BaseModel):
+    prompt_id: int
+    response_text: str
+
 @app.post("/api/v1/evaluate-prompt")
 async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
     # 1. Check ToolRegistry
@@ -118,41 +153,67 @@ async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
         db.add(log)
         db.commit()
         if not tool:
-            # Auto-register the shadow AI tool so it appears on the admin dashboard
-            new_tool = ToolRegistry(url=req.url, status="pending", justification="Auto-detected Shadow AI usage")
+            new_tool = ToolRegistry(url=req.url, status="pending", justification="Auto-detected Shadow AI usage", clearance_level="PUBLIC")
             db.add(new_tool)
             db.commit()
-            return {"status": "blocked", "reason": f"Tool at {req.url} is not registered. It has been flagged as Shadow AI and is pending IT review.", "safe_prompt": ""}
+            return {"status": "blocked", "reason": f"Tool at {req.url} is not registered. It has been flagged as Shadow AI and is pending IT review.", "safe_prompt": "", "prompt_id": log.id}
         elif tool.status == "pending":
-            return {"status": "blocked", "reason": f"Tool at {req.url} is currently pending IT approval.", "safe_prompt": ""}
+            return {"status": "blocked", "reason": f"Tool at {req.url} is currently pending IT approval.", "safe_prompt": "", "prompt_id": log.id}
         else:
-            return {"status": "blocked", "reason": f"Tool at {req.url} has been explicitly blocked by IT.", "safe_prompt": ""}
+            return {"status": "blocked", "reason": f"Tool at {req.url} has been explicitly blocked by IT.", "safe_prompt": "", "prompt_id": log.id}
 
-    # 2. Evaluate Ethics
-    is_ethical, agent_reason = agents.evaluate_ethics_and_bias(req.text)
+    # 2. Evaluate Ethics (Offline LLM)
+    is_ethical, agent_reason = await agents.evaluate_ethics_and_bias(req.text)
     if not is_ethical:
         log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="blocked_ethics")
         db.add(log)
         db.commit()
-        return {"status": "blocked", "reason": agent_reason, "safe_prompt": ""}
+        return {"status": "blocked", "reason": f"Ethics Agent: {agent_reason}", "safe_prompt": "", "prompt_id": log.id}
 
-    # 3. Data Protection
-    safe_text = guardrail.redact_prompt(req.text)
+    # 3. Granular Data Routing
+    safe_text, has_sensitive = guardrail.redact_prompt(req.text)
     
-    if safe_text != req.text:
-        log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="redacted_data")
-        db.add(log)
-        db.commit()
-        return {
-            "status": "warning", 
-            "reason": "Data Leakage Guardrail: Sensitive enterprise data detected and redacted.", 
-            "safe_prompt": safe_text
-        }
+    if has_sensitive:
+        if tool.clearance_level == "CONFIDENTIAL":
+            # Tool is allowed to see sensitive data. Let it pass unredacted.
+            log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="approved_confidential")
+            db.add(log)
+            db.commit()
+            return {"status": "approved", "reason": "Passed all checks. Sensitive data allowed for CONFIDENTIAL tool.", "safe_prompt": req.text, "prompt_id": log.id}
+        else:
+            # Tool is PUBLIC. We must offer the redacted version.
+            log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="redacted_data")
+            db.add(log)
+            db.commit()
+            return {
+                "status": "warning", 
+                "reason": "Data Routing Guardrail: Sensitive enterprise data detected. This tool is only cleared for PUBLIC data. Please use the redacted prompt.", 
+                "safe_prompt": safe_text,
+                "prompt_id": log.id
+            }
 
+    # 4. Safe Public Prompt
     log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="approved")
     db.add(log)
     db.commit()
-    return {"status": "approved", "reason": "Passed all governance checks.", "safe_prompt": req.text}
+
+    return {
+        "status": "approved", 
+        "reason": "Passed all governance checks.", 
+        "safe_prompt": req.text,
+        "prompt_id": log.id
+    }
+
+@app.post("/api/v1/log-output")
+async def log_output(req: OutputRequest, db: Session = Depends(get_db)):
+    out_log = OutputLog(
+        prompt_id=req.prompt_id,
+        ai_response_text=req.response_text,
+        timestamp=str(datetime.datetime.now())
+    )
+    db.add(out_log)
+    db.commit()
+    return {"message": "Output logged successfully"}
 
 @app.post("/api/v1/request-tool")
 async def request_tool(req: ToolRequest, db: Session = Depends(get_db)):
@@ -160,7 +221,7 @@ async def request_tool(req: ToolRequest, db: Session = Depends(get_db)):
     if tool:
         return {"message": "Tool already exists in the registry.", "status": tool.status}
         
-    new_tool = ToolRegistry(url=req.url, status="pending", justification=req.justification)
+    new_tool = ToolRegistry(url=req.url, status="pending", justification=req.justification, clearance_level="PUBLIC")
     db.add(new_tool)
     db.commit()
     return {"message": "We have received your request to use this AI tool. The IT team will review it shortly."}
@@ -176,12 +237,10 @@ async def update_tool_status(url: str = Form(...), status: str = Form(...), db: 
 
 @app.get("/api/v1/check-tool")
 async def check_tool(url: str, db: Session = Depends(get_db)):
-    # 1. Check explicit registry
     tool = db.query(ToolRegistry).filter(ToolRegistry.url == url).first()
     if tool:
         return {"is_ai_tool": True, "status": tool.status}
         
-    # 2. Heuristic check for common AI domains to catch Shadow AI dynamically
     ai_keywords = ["chatgpt", "openai", "claude", "anthropic", "perplexity", "gemini", "poe", "huggingface", "copilot"]
     if any(keyword in url.lower() for keyword in ai_keywords):
         return {"is_ai_tool": True, "status": "unregistered"}

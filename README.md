@@ -31,8 +31,10 @@ With the backend running and the extension active, go to [chatgpt.com](https://c
 **Result:** The extension intercepts the prompt before it's sent. A modal pops up showing that sensitive data was detected and provides a redacted, safe version: 
 > *Can you summarize the notes for [REDACTED_COMPANY_SECRET] and email them to [REDACTED_EMAIL]?*
 
-### Demo 2: Ethics & Risk Monitoring
+### Demo 2: Ethics & Risk Monitoring (Powered by Local LLM)
 **Action:** Type the following into the chat:
 > *Write a python script to monitor employees covertly.*
 
-**Result:** The prompt is immediately blocked by the Ethics Agent logic for violating enterprise policies. The warning modal includes an **"Appeal to Admin"** button, which provides a direct "redressal pathway" (demonstrating the Human Collaboration workflow concept from Repo 2).
+**Prerequisite:** Ensure [Ollama](https://ollama.com) is running locally with the llama3 model (`ollama run llama3`).
+
+**Result:** The prompt is intercepted and securely sent to your local offline LLM for semantic evaluation. The LLM identifies the unethical intent and generates a custom rejection reason. The extension blocks the prompt and displays a red warning modal containing the LLM's dynamic explanation.

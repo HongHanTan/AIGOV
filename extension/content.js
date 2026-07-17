@@ -1,5 +1,5 @@
 // Function to create a stylish popup modal
-function showGovernanceModal(title, message, safePrompt, chatInput) {
+function showGovernanceModal(title, message, safePrompt, chatInput, promptId, triggerType, originalTarget) {
     const modal = document.createElement("div");
     modal.style.cssText = `
         position: fixed; top: 20px; right: 20px; z-index: 999999;
@@ -36,6 +36,12 @@ function showGovernanceModal(title, message, safePrompt, chatInput) {
         // Give the user a brief visual cue before they can hit enter again
         chatInput.style.border = "2px solid #2ed573";
         setTimeout(() => chatInput.style.border = "", 2000);
+        
+        resubmitPrompt(chatInput, triggerType, originalTarget);
+        
+        if (promptId) {
+            startOutputTracking(promptId);
+        }
     });
 
     // Handle Human-in-the-loop Redressal Requirement
@@ -45,12 +51,125 @@ function showGovernanceModal(title, message, safePrompt, chatInput) {
     });
 }
 
+function startOutputTracking(promptId) {
+    console.log("AIGOV: Tracking output for prompt ID", promptId);
+    
+    const targetNode = document.querySelector('main') || document.body;
+    let lastText = "";
+    let debounceTimer = null;
+    let isTracking = true;
+
+    const observer = new MutationObserver((mutations) => {
+        if (!isTracking) return;
+        
+        // Find the LAST assistant message on the page
+        const assistantMessages = document.querySelectorAll('div[data-message-author-role="assistant"], .markdown.prose');
+        if (assistantMessages.length === 0) return;
+        
+        const latestMessage = assistantMessages[assistantMessages.length - 1];
+        const currentText = latestMessage.innerText;
+        
+        if (currentText !== lastText && currentText.trim().length > 0) {
+            lastText = currentText;
+            
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                isTracking = false;
+                observer.disconnect();
+                console.log("AIGOV: Generation complete, logging output...");
+                chrome.runtime.sendMessage({
+                    action: "logOutput",
+                    prompt_id: promptId,
+                    response_text: lastText
+                });
+            }, 3000); // 3 seconds of no DOM text changes means it's done
+        }
+    });
+
+    observer.observe(targetNode, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+}
+
+let isAwaitingGovernance = false;
+
+function resubmitPrompt(chatInput, triggerType, originalTarget) {
+    setTimeout(() => {
+        if (triggerType === 'enter') {
+            const enterEvent = new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true
+            });
+            chatInput.dispatchEvent(enterEvent);
+        } else if (triggerType === 'click' && originalTarget) {
+            originalTarget.click();
+        }
+    }, 100);
+}
+
+function handlePromptSubmission(event, chatInput, triggerType, actionButton = null) {
+    if (isAwaitingGovernance) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+    }
+
+    const promptText = chatInput.value !== undefined ? chatInput.value : chatInput.innerText;
+    if (promptText.trim().length === 0) return;
+
+    // Block the prompt temporarily while we ask the backend
+    event.preventDefault(); 
+    event.stopPropagation();
+    isAwaitingGovernance = true;
+
+    if (chatInput.tagName.toLowerCase() === 'textarea') {
+        chatInput.disabled = true;
+    } else {
+        chatInput.setAttribute('contenteditable', 'false');
+    }
+
+    const originalTarget = actionButton || event.target;
+
+    chrome.runtime.sendMessage({ action: "evaluatePrompt", text: promptText }, function (response) {
+        if (chatInput.tagName.toLowerCase() === 'textarea') {
+            chatInput.disabled = false;
+        } else {
+            chatInput.setAttribute('contenteditable', 'true');
+            chatInput.focus();
+        }
+
+        isAwaitingGovernance = false;
+
+        if (response.status === "warning" || response.status === "blocked") {
+            showGovernanceModal("🛑 Policy Violation", response.reason, response.safe_prompt, chatInput, response.prompt_id, triggerType, originalTarget);
+        } else if (response.status === "approved") {
+            chatInput.style.border = "2px solid #1dd1a1";
+            
+            // Automatically send it using a synthesized event
+            resubmitPrompt(chatInput, triggerType, originalTarget);
+            
+            if (response.prompt_id) {
+                startOutputTracking(response.prompt_id);
+            }
+        }
+    });
+}
+
 // Check if current site is an AI tool before listening
 chrome.runtime.sendMessage({ action: "checkTool" }, function(response) {
     if (response && response.is_ai_tool) {
+        
+        // Listen for "Enter" key
         document.addEventListener("keydown", function (event) {
+            if (!event.isTrusted) return; // Ignore our own synthesized events
+
             if (event.key === "Enter" && !event.shiftKey) {
-                // More robust input detection: target whatever the user is currently typing in
                 const activeElement = document.activeElement;
                 if (!activeElement) return;
                 
@@ -59,44 +178,40 @@ chrome.runtime.sendMessage({ action: "checkTool" }, function(response) {
                                 activeElement.id === 'prompt-textarea';
 
                 if (isInput) {
-                    const chatInput = activeElement;
-                    const promptText = chatInput.value !== undefined ? chatInput.value : chatInput.innerText;
-
-                    if (promptText.trim().length > 0) {
-                        event.preventDefault(); // Stop prompt from sending
-                        event.stopPropagation();
-                        
-                        // Briefly disable input while evaluating
-                        if (chatInput.tagName.toLowerCase() === 'textarea') {
-                            chatInput.disabled = true;
-                        } else {
-                            chatInput.setAttribute('contenteditable', 'false');
-                        }
-
-                        chrome.runtime.sendMessage({ action: "evaluatePrompt", text: promptText }, function (response) {
-                            if (chatInput.tagName.toLowerCase() === 'textarea') {
-                                chatInput.disabled = false;
-                            } else {
-                                chatInput.setAttribute('contenteditable', 'true');
-                                chatInput.focus();
-                            }
-
-                    if (response.status === "warning" || response.status === "blocked") {
-                        showGovernanceModal("🛑 Policy Violation", response.reason, response.safe_prompt, chatInput);
-                    } else if (response.status === "approved") {
-                        // Let it pass
-                        if (chatInput.value !== undefined) {
-                            chatInput.value = promptText;
-                        } else {
-                            chatInput.innerText = promptText;
-                        }
-                        chatInput.style.border = "2px solid #1dd1a1";
-                        alert("✅ Prompt Approved by Governance Engine.");
-                    }
-                });
+                    handlePromptSubmission(event, activeElement, 'enter');
+                }
             }
-        }
-    }
+        }, true); // Capture phase
+        
+        // Listen for Send button click
+        document.addEventListener("click", function(event) {
+            if (!event.isTrusted) return; // Ignore our own synthesized events
+
+            const button = event.target.closest('button') || event.target.closest('[role="button"]');
+            if (!button) return;
+            
+            const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+            const dataTestId = (button.getAttribute('data-testid') || '').toLowerCase();
+            
+            // Typical heuristics for the "Send" button on LLM interfaces
+            const isSendButton = ariaLabel.includes('send') || 
+                                 ariaLabel.includes('message') || 
+                                 dataTestId.includes('send') || 
+                                 button.querySelector('svg');
+            
+            if (isSendButton) {
+                // Find the chat input associated with this action
+                const chatInput = document.querySelector('#prompt-textarea') || 
+                                  document.querySelector('textarea') || 
+                                  document.querySelector('[contenteditable="true"]');
+                                  
+                if (chatInput) {
+                    const promptText = chatInput.value !== undefined ? chatInput.value : chatInput.innerText;
+                    if (promptText.trim().length > 0) {
+                        handlePromptSubmission(event, chatInput, 'click', button);
+                    }
+                }
+            }
         }, true); // Capture phase
     }
 });
