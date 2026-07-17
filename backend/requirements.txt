@@ -4,3 +4,4 @@ pydantic
 spacy
 sqlalchemy
 jinja2
+httpx

@@ -79,7 +79,7 @@
                 <td>{{ log.url }}</td>
                 <td><span class="badge {{ log.status }}">{{ log.status }}</span></td>
                 <td>{{ log.prompt_text[:60] }}...</td>
-                <td><button style="background-color: #747d8c;" onclick="deleteLog({{ log.id }})">Delete</button></td>
+                <td><button style="background-color: #747d8c;" onclick="deleteLog('{{ log.id }}')">Delete</button></td>
             </tr>
             {% else %}
             <tr>
