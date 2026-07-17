@@ -3,6 +3,13 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import re
 import datetime
+import spacy
+
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    # Fallback if the model hasn't been downloaded yet
+    nlp = None
 
 app = FastAPI(title="Enterprise AI Governance API")
 
@@ -38,14 +45,22 @@ class ApprovalWorkflowHub:
 # --- REPO 1 REFERENCE: NeMo Guardrails (Data Protection) ---
 class DataProtectionGuardrail:
     def __init__(self):
-        # Simple regex to simulate enterprise data detection (PII, SSN, Credit Cards, Secrets)
+        # Regex for emails and specific company secrets
         self.pii_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
         self.secret_project = "project titan"
 
     def redact_prompt(self, text):
+        # 1. Regex fallback for emails and secrets
         redacted_text = self.pii_pattern.sub("[REDACTED_EMAIL]", text)
         redacted_text = re.sub(self.secret_project, "[REDACTED_COMPANY_SECRET]", redacted_text, flags=re.IGNORECASE)
         
+        # 2. ML-based extraction using spaCy (if model is loaded)
+        if nlp:
+            doc = nlp(redacted_text)
+            for ent in doc.ents:
+                if ent.label_ in ["PERSON", "ORG", "GPE", "LOC", "FAC"]:
+                    redacted_text = redacted_text.replace(ent.text, f"[REDACTED_{ent.label_}]")
+                    
         return redacted_text
 
 # --- REPO 2 REFERENCE: AI Governance Framework (Risk & Ethics Agents) ---
