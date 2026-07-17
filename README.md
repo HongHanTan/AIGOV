@@ -15,6 +15,11 @@ python -m uvicorn server:app --reload
 2. Enable **Developer mode** in the top right corner.
 3. Click **Load unpacked** and select the `extension` folder located in this project directory.
 
+### 3. Access Admin Dashboard
+After the backend is running, open your browser and navigate to:
+[http://localhost:8000/dashboard](http://localhost:8000/dashboard)
+Here you can view audit logs and manage approved AI tools in the Tool Registry.
+
 ## Testing & Demos
 
 With the backend running and the extension active, go to [chatgpt.com](https://chatgpt.com) to test the governance features.
