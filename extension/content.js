@@ -1,5 +1,5 @@
 // AIGOV Chrome Extension
-function showGovernanceModal(title, message, safePrompt, chatInput, promptId, triggerType, originalTarget) {
+function showGovernanceModal(title, message, plainExplanation, safePrompt, chatInput, promptId, triggerType, originalTarget) {
     const modal = document.createElement("div");
     modal.style.cssText = `
         position: fixed; top: 20px; right: 20px; z-index: 999999;
@@ -7,9 +7,18 @@ function showGovernanceModal(title, message, safePrompt, chatInput, promptId, tr
         box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-left: 5px solid #ff4757;
         font-family: sans-serif; width: 350px;
     `;
+    
+    let plainExplanationHtml = "";
+    if (plainExplanation) {
+        plainExplanationHtml = `<div style="background: rgba(255, 71, 87, 0.1); border: 1px solid rgba(255, 71, 87, 0.3); padding: 10px; margin-bottom: 15px; border-radius: 4px; font-size: 13px; color: #ffebef;">
+            <strong>Plain Explanation:</strong> ${plainExplanation}
+        </div>`;
+    }
+
     modal.innerHTML = `
         <h3 style="margin-top: 0; color: #ff4757;">${title}</h3>
         <p style="font-size: 14px;">${message}</p>
+        ${plainExplanationHtml}
         <p style="font-size: 12px; color: #a4b0be; margin-bottom: 5px;">Suggested Safe Prompt:</p>
         <div style="background: #2f3542; padding: 10px; border-radius: 4px; font-size: 13px; font-style: italic;">
             ${safePrompt}
@@ -84,16 +93,6 @@ function startOutputTracking(promptId) {
                     response_text: lastText
                 });
                 
-                // Fetch the Micro-LLM explanation for the AI's output
-                chrome.runtime.sendMessage({
-                    action: "explainOutput",
-                    text: lastText
-                }, function(response) {
-                    if (response && response.explanation) {
-                        showExplanationWidget(response.explanation);
-                    }
-                });
-                
             }, 3000); // 3 seconds of no DOM text changes means it's done
         }
     });
@@ -103,23 +102,6 @@ function startOutputTracking(promptId) {
         subtree: true,
         characterData: true
     });
-}
-
-function showExplanationWidget(explanation) {
-    const widget = document.createElement("div");
-    widget.style.cssText = `
-        position: fixed; bottom: 20px; right: 20px; z-index: 999999;
-        background: #3742fa; color: white; padding: 15px; border-radius: 8px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3); font-family: sans-serif; width: 320px;
-        font-size: 13px; line-height: 1.4; border-left: 5px solid #70a1ff;
-    `;
-    widget.innerHTML = `
-        <h4 style="margin: 0 0 8px 0; color: #ffffff;">🧠 AI Decision Explained</h4>
-        <p style="margin: 0;">${explanation}</p>
-        <button id="closeWidget" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold;">Got it</button>
-    `;
-    document.body.appendChild(widget);
-    document.getElementById("closeWidget").addEventListener("click", () => widget.remove());
 }
 
 let isAwaitingGovernance = false;
@@ -176,7 +158,7 @@ function handlePromptSubmission(event, chatInput, triggerType, actionButton = nu
         isAwaitingGovernance = false;
 
         if (response.status === "warning" || response.status === "blocked") {
-            showGovernanceModal("🛑 Policy Violation", response.reason, response.safe_prompt, chatInput, response.prompt_id, triggerType, originalTarget);
+            showGovernanceModal("🛑 Policy Violation", response.reason, response.plain_explanation, response.safe_prompt, chatInput, response.prompt_id, triggerType, originalTarget);
         } else if (response.status === "approved") {
             chatInput.style.border = "2px solid #1dd1a1";
             

@@ -87,23 +87,25 @@ class DataProtectionGuardrail:
         redacted_text = text
         triggers = []
         
-        if self.pii_pattern.search(redacted_text):
+        if self.pii_pattern.search(text):
+            triggers.append("unencrypted contact details (emails)")
             redacted_text = self.pii_pattern.sub("[REDACTED_EMAIL]", redacted_text)
-            triggers.append("unencrypted client contact details")
             
-        if re.search(self.secret_project, redacted_text, flags=re.IGNORECASE):
-            redacted_text = re.sub(self.secret_project, "[REDACTED_COMPANY_SECRET]", redacted_text, flags=re.IGNORECASE)
+        if re.search(self.secret_project, text, flags=re.IGNORECASE):
             triggers.append("proprietary project code")
+            redacted_text = re.sub(self.secret_project, "[REDACTED_COMPANY_SECRET]", redacted_text, flags=re.IGNORECASE)
+        
+        has_sensitive = (redacted_text != text)
         
         if nlp:
             doc = nlp(redacted_text)
             for ent in doc.ents:
                 if ent.label_ in ["PERSON", "ORG", "GPE", "LOC", "FAC"]:
+                    if "named entities" not in triggers:
+                        triggers.append("named entities")
                     redacted_text = redacted_text.replace(ent.text, f"[REDACTED_{ent.label_}]")
-                    if "personally identifiable information" not in triggers:
-                        triggers.append("personally identifiable information")
+                    has_sensitive = True
                     
-        has_sensitive = len(triggers) > 0
         return redacted_text, has_sensitive, triggers
 
 import hashlib
@@ -148,8 +150,8 @@ class RiskMonitoringAgents:
                 cached_metadata = results['metadatas'][0][0]
                 is_ethical = cached_metadata['is_ethical'] == "true"
                 reason = cached_metadata['reason']
-                triggers = ["a semantic match to a previously blocked ethical violation"]
-                return is_ethical, reason, triggers
+                plain_explanation = "This request was blocked because it is semantically identical to a previously blocked prompt."
+                return is_ethical, f"[Semantic Cache Hit] {reason}", plain_explanation
 
         # 2. Fast Custom ML Classifier
         if self.classifier:
@@ -157,23 +159,16 @@ class RiskMonitoringAgents:
             if prediction != "safe corporate request":
                 is_ethical = False
                 reason = f"Custom ML Classifier blocked: '{prediction}'"
-                
-                # Map to human readable trigger
-                if "surveillance" in prediction.lower() or "monitor" in prediction.lower():
-                    triggers = ["covert employee surveillance keywords"]
-                elif "bias" in prediction.lower():
-                    triggers = ["discriminatory or biased language"]
-                else:
-                    triggers = [f"content flagged as {prediction}"]
+                plain_explanation = f"This request was blocked because the AI model classified the underlying intent as '{prediction}', which violates corporate ethics policies."
             else:
                 is_ethical = True
                 reason = "Custom ML Classifier: Safe"
-                triggers = []
+                plain_explanation = "The prompt appears safe."
         else:
             # Fallback if model failed to load
             is_ethical = True
             reason = "Safe (No ML Model Loaded)"
-            triggers = []
+            plain_explanation = "Safe (No ML Model Loaded)"
 
         # 3. Store in Cache
         doc_id = hashlib.sha256(text.encode()).hexdigest()
@@ -183,66 +178,10 @@ class RiskMonitoringAgents:
             ids=[doc_id]
         )
         
-        return is_ethical, reason, triggers
-        return is_ethical, reason
-        return is_ethical, reason
-        return is_ethical, reason
-        return is_ethical, reason
-        return is_ethical, reason
-        return is_ethical, reason
+        return is_ethical, reason, plain_explanation
 
 guardrail = DataProtectionGuardrail()
 agents = RiskMonitoringAgents()
-
-class OutputExplainer:
-    def __init__(self):
-        print("Loading Heuristic Explainer Engine...")
-        # A robust set of heuristics to accurately match the context of the LLM output
-        self.patterns = {
-            'rejection': {
-                'keywords': ['reject', 'unfortunately', 'other candidates', 'careful consideration', 'not selected', 'future endeavors', 'regret to inform'],
-                'intent': 'drafting a professional rejection communication',
-                'analysis': 'The AI adopted a formal, polite tone anchoring on standard HR practices. It deliberately kept the reasoning generalized to minimize corporate liability while maintaining a respectful employer brand.'
-            },
-            'summary': {
-                'keywords': ['summary', 'brief', 'overview', 'conclusion', 'key points', 'data', 'metrics', 'in short'],
-                'intent': 'summarizing internal data or discussions',
-                'analysis': 'The AI structured the output to highlight key metrics and actionable takeaways. It omitted granular data points to ensure the summary remains concise and easily digestible for executive review.'
-            },
-            'code': {
-                'keywords': ['def ', 'import ', 'function', 'class ', 'return', 'script', 'const ', 'let ', 'var '],
-                'intent': 'generating technical code or scripts',
-                'analysis': 'The AI generated functional programming constructs. It focused on syntactical correctness and standard engineering paradigms while ensuring the code aligns with standard software practices.'
-            },
-            'instructions': {
-                'keywords': ['step 1', 'first', 'then', 'finally', 'how to', 'guide', 'instructions', 'ensure that'],
-                'intent': 'providing technical or procedural instructions',
-                'analysis': 'The AI broke down the requested task into a sequential, actionable guide. It prioritized clarity and logical flow to ensure the user can follow the steps without ambiguity.'
-            }
-        }
-        print("Heuristic Explainer Engine loaded.")
-        
-    def explain(self, text):
-        text_lower = text.lower()
-        matched_category = None
-        max_matches = 0
-        
-        for cat, data in self.patterns.items():
-            matches = sum(1 for kw in data['keywords'] if kw in text_lower)
-            if matches > max_matches:
-                max_matches = matches
-                matched_category = cat
-                
-        if matched_category:
-            intent = self.patterns[matched_category]['intent']
-            analysis = self.patterns[matched_category]['analysis']
-        else:
-            intent = 'general professional assistance'
-            analysis = 'The AI processed the request using standard corporate communication protocols. It focused on delivering clear, neutral, and actionable information tailored to the prompt.'
-            
-        return f"Governance Analysis: The intent of the AI's response was categorized as '{intent}'.\n\nDetailed Reasoning: {analysis}"
-
-explainer_agent = OutputExplainer()
 
 class PromptRequest(BaseModel):
     user_id: str
@@ -256,22 +195,6 @@ class ToolRequest(BaseModel):
 class OutputRequest(BaseModel):
     prompt_id: int
     response_text: str
-
-class ExplainRequest(BaseModel):
-    text: str
-
-def generate_plain_explanation(action, triggers):
-    if not triggers:
-        return f"This request was {action}."
-    
-    if len(triggers) == 1:
-        trigger_str = triggers[0]
-    elif len(triggers) == 2:
-        trigger_str = f"{triggers[0]} and {triggers[1]}"
-    else:
-        trigger_str = ", ".join(triggers[:-1]) + f", and {triggers[-1]}"
-        
-    return f"This request was {action} because it contained {trigger_str}."
 
 @app.post("/api/v1/evaluate-prompt")
 async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
@@ -294,17 +217,15 @@ async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
             return {"status": "blocked", "reason": f"Tool at {req.url} has been explicitly blocked by IT.", "safe_prompt": "", "prompt_id": log.id}
 
     # 2. Evaluate Ethics (Offline LLM)
-    is_ethical, agent_reason, ethics_triggers = await agents.evaluate_ethics_and_bias(req.text)
+    is_ethical, agent_reason, ethics_plain_explanation = await agents.evaluate_ethics_and_bias(req.text)
     if not is_ethical:
         log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="blocked_ethics")
         db.add(log)
         db.commit()
-        
-        nlg_reason = generate_plain_explanation("blocked", ethics_triggers)
-        return {"status": "blocked", "reason": nlg_reason, "safe_prompt": "", "prompt_id": log.id}
+        return {"status": "blocked", "reason": f"Ethics Agent: {agent_reason}", "plain_explanation": ethics_plain_explanation, "safe_prompt": "", "prompt_id": log.id}
 
     # 3. Granular Data Routing
-    safe_text, has_sensitive, data_triggers = guardrail.redact_prompt(req.text)
+    safe_text, has_sensitive, triggers = guardrail.redact_prompt(req.text)
     
     if has_sensitive:
         if tool.clearance_level == "CONFIDENTIAL":
@@ -319,10 +240,13 @@ async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
             db.add(log)
             db.commit()
             
-            nlg_reason = generate_plain_explanation("altered", data_triggers)
+            trigger_str = " and ".join(triggers) if len(triggers) <= 2 else ", ".join(triggers[:-1]) + f", and {triggers[-1]}"
+            plain_explanation = f"This request was altered because it contained {trigger_str}."
+            
             return {
                 "status": "warning", 
-                "reason": nlg_reason, 
+                "reason": "Data Routing Guardrail: Sensitive enterprise data detected. This tool is only cleared for PUBLIC data. Please use the redacted prompt.", 
+                "plain_explanation": plain_explanation,
                 "safe_prompt": safe_text,
                 "prompt_id": log.id
             }
@@ -357,11 +281,6 @@ async def get_output(prompt_id: int, db: Session = Depends(get_db)):
         return {"response_text": output.ai_response_text}
     else:
         return {"response_text": "No output recorded for this prompt."}
-
-@app.post("/api/v1/explain-output")
-async def explain_output_endpoint(req: ExplainRequest):
-    explanation = explainer_agent.explain(req.text)
-    return {"explanation": explanation}
 
 @app.post("/api/v1/request-tool")
 async def request_tool(req: ToolRequest, db: Session = Depends(get_db)):

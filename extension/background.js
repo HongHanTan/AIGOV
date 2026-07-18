@@ -37,18 +37,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }).catch(err => console.error("Failed to log output", err));
         return true;
     }
-
-    if (request.action === "explainOutput") {
-        fetch("http://localhost:8000/api/v1/explain-output", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                text: request.text
-            })
-        })
-            .then(response => response.json())
-            .then(data => sendResponse(data))
-            .catch(error => sendResponse({ explanation: "Explanation unavailable." }));
-        return true;
-    }
 });
