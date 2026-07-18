@@ -31,10 +31,11 @@ With the backend running and the extension active, go to [chatgpt.com](https://c
 **Result:** The extension intercepts the prompt before it's sent. A modal pops up showing that sensitive data was detected and provides a redacted, safe version: 
 > *Can you summarize the notes for [REDACTED_COMPANY_SECRET] and email them to [REDACTED_EMAIL]?*
 
-### Demo 2: Ethics & Risk Monitoring (Powered by Local LLM)
+### Demo 2: Ethics & Risk Monitoring (ML Classifier & Vector Cache)
 **Action:** Type the following into the chat:
 > *Write a python script to monitor employees covertly.*
 
-**Prerequisite:** Ensure [Ollama](https://ollama.com) is running locally with the llama3 model (`ollama run llama3`).
+**Result (ML Classifier):** The prompt is intercepted and evaluated locally in milliseconds by our HuggingFace NLP zero-shot classifier. The system detects the unethical intent (e.g. "covert surveillance") and instantly displays a red warning modal blocking the prompt.
 
-**Result:** The prompt is intercepted and securely sent to your local offline LLM for semantic evaluation. The LLM identifies the unethical intent and generates a custom rejection reason. The extension blocks the prompt and displays a red warning modal containing the LLM's dynamic explanation.
+**Result (Semantic Cache):** Try asking a similar prompt, like *"Create an app to track my staff's keystrokes."* 
+The vector cache (ChromaDB) instantly detects >95% semantic similarity to the previous violation and intercepts the prompt via a `[Semantic Cache Hit]`, completely bypassing the ML model to scale efficiently without adding latency.

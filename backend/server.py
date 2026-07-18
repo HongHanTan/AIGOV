@@ -98,45 +98,64 @@ class DataProtectionGuardrail:
                     
         return redacted_text, has_sensitive
 
+import hashlib
+import chromadb
+from transformers import pipeline
+
 # --- REPO 2 REFERENCE: AI Governance Framework (Risk & Ethics Agents) ---
 class RiskMonitoringAgents:
-    async def evaluate_ethics_and_bias(self, text):
-        system_prompt = """Evaluate the user's input for bias, unethical behavior, or covert monitoring. 
-        Strictly return a JSON object: {"is_ethical": boolean, "reason": "string"}."""
+    def __init__(self):
+        print("Loading ML Classifier and ChromaDB...")
+        # Tiny fast model for zero-shot classification
+        self.classifier = pipeline("zero-shot-classification", model="typeform/distilbert-base-uncased-mnli")
+        self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
+        self.cache_collection = self.chroma_client.get_or_create_collection(name="prompt_cache")
         
-        fallback_keywords = ["monitor employees covertly", "bypass security", "steal data", "hack"]
-        def check_fallback():
-            if any(keyword in text.lower() for keyword in fallback_keywords):
-                return False, "Offline Fallback: Unethical keywords detected while AI Ethics Agent is offline."
-            return True, "Safe (Ollama fallback)"
-            
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "http://127.0.0.1:11434/api/generate",
-                    json={
-                        "model": "llama3", # default ollama model assumption
-                        "prompt": f"System: {system_prompt}\n\nUser: {text}",
-                        "stream": False,
-                        "format": "json"
-                    },
-                    timeout=60.0
-                )
-                if response.status_code == 200:
-                    data = response.json().get("response", "")
-                    parsed = json.loads(data)
-                    
-                    is_ethical = parsed.get("is_ethical", True)
-                    # Correctly handle if the LLM hallucinated a string instead of a true boolean
-                    if isinstance(is_ethical, str):
-                        is_ethical = is_ethical.lower() != "false"
-                        
-                    return is_ethical, parsed.get("reason", "Safe")
-                else:
-                    return check_fallback()
-        except Exception as e:
-            print(f"Ollama error: {e}")
-            return check_fallback()
+        # Pre-warm the cache to force ChromaDB to download the 79MB embedding model now
+        # instead of freezing when the user sends their first prompt!
+        print("Pre-warming Semantic Cache...")
+        self.cache_collection.query(query_texts=["warmup"], n_results=1)
+        print("ML models loaded successfully.")
+
+    async def evaluate_ethics_and_bias(self, text):
+        # 1. Semantic Caching
+        results = self.cache_collection.query(
+            query_texts=[text],
+            n_results=1
+        )
+        
+        # Check if we have a match and distance is small (meaning highly similar)
+        if results and results['distances'] and len(results['distances'][0]) > 0:
+            distance = results['distances'][0][0]
+            if distance < 0.3: # L2 distance threshold for semantic similarity
+                cached_metadata = results['metadatas'][0][0]
+                is_ethical = cached_metadata['is_ethical'] == "true"
+                reason = cached_metadata['reason']
+                return is_ethical, f"[Semantic Cache Hit] {reason}"
+
+        # 2. Fast ML Classifier
+        labels = ["safe corporate request", "covert surveillance", "data theft", "unethical hacking"]
+        result = self.classifier(text, labels)
+        
+        top_label = result['labels'][0]
+        score = result['scores'][0]
+        
+        if top_label != "safe corporate request" and score > 0.25:
+            is_ethical = False
+            reason = f"ML Classifier blocked: '{top_label}' (Confidence: {score:.2f})"
+        else:
+            is_ethical = True
+            reason = "ML Classifier: Safe"
+
+        # 3. Store in Cache
+        doc_id = hashlib.sha256(text.encode()).hexdigest()
+        self.cache_collection.add(
+            documents=[text],
+            metadatas=[{"is_ethical": "true" if is_ethical else "false", "reason": reason}],
+            ids=[doc_id]
+        )
+        
+        return is_ethical, reason
 
 guardrail = DataProtectionGuardrail()
 agents = RiskMonitoringAgents()
