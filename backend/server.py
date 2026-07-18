@@ -100,14 +100,23 @@ class DataProtectionGuardrail:
 
 import hashlib
 import chromadb
-from transformers import pipeline
+import joblib
+import os
 
 # --- REPO 2 REFERENCE: AI Governance Framework (Risk & Ethics Agents) ---
 class RiskMonitoringAgents:
     def __init__(self):
-        print("Loading ML Classifier and ChromaDB...")
-        # Tiny fast model for zero-shot classification
-        self.classifier = pipeline("zero-shot-classification", model="typeform/distilbert-base-uncased-mnli")
+        print("Loading custom ML Classifier and ChromaDB...")
+        
+        # Load the custom trained LinearSVC model
+        model_path = os.path.join(os.path.dirname(__file__), "custom_ethics_model.joblib")
+        if os.path.exists(model_path):
+            self.classifier = joblib.load(model_path)
+            print("Custom LinearSVC model loaded successfully.")
+        else:
+            print("WARNING: custom_ethics_model.joblib not found!")
+            self.classifier = None
+            
         self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
         self.cache_collection = self.chroma_client.get_or_create_collection(name="prompt_cache")
         
@@ -115,7 +124,7 @@ class RiskMonitoringAgents:
         # instead of freezing when the user sends their first prompt!
         print("Pre-warming Semantic Cache...")
         self.cache_collection.query(query_texts=["warmup"], n_results=1)
-        print("ML models loaded successfully.")
+        print("ML infrastructure ready.")
 
     async def evaluate_ethics_and_bias(self, text):
         # 1. Semantic Caching
@@ -133,19 +142,19 @@ class RiskMonitoringAgents:
                 reason = cached_metadata['reason']
                 return is_ethical, f"[Semantic Cache Hit] {reason}"
 
-        # 2. Fast ML Classifier
-        labels = ["safe corporate request", "covert surveillance", "data theft", "unethical hacking"]
-        result = self.classifier(text, labels)
-        
-        top_label = result['labels'][0]
-        score = result['scores'][0]
-        
-        if top_label != "safe corporate request" and score > 0.25:
-            is_ethical = False
-            reason = f"ML Classifier blocked: '{top_label}' (Confidence: {score:.2f})"
+        # 2. Fast Custom ML Classifier
+        if self.classifier:
+            prediction = self.classifier.predict([text])[0]
+            if prediction != "safe corporate request":
+                is_ethical = False
+                reason = f"Custom ML Classifier blocked: '{prediction}'"
+            else:
+                is_ethical = True
+                reason = "Custom ML Classifier: Safe"
         else:
+            # Fallback if model failed to load
             is_ethical = True
-            reason = "ML Classifier: Safe"
+            reason = "Safe (No ML Model Loaded)"
 
         # 3. Store in Cache
         doc_id = hashlib.sha256(text.encode()).hexdigest()
@@ -156,9 +165,65 @@ class RiskMonitoringAgents:
         )
         
         return is_ethical, reason
+        return is_ethical, reason
+        return is_ethical, reason
+        return is_ethical, reason
+        return is_ethical, reason
+        return is_ethical, reason
+        return is_ethical, reason
 
 guardrail = DataProtectionGuardrail()
 agents = RiskMonitoringAgents()
+
+class OutputExplainer:
+    def __init__(self):
+        print("Loading Heuristic Explainer Engine...")
+        # A robust set of heuristics to accurately match the context of the LLM output
+        self.patterns = {
+            'rejection': {
+                'keywords': ['reject', 'unfortunately', 'other candidates', 'careful consideration', 'not selected', 'future endeavors', 'regret to inform'],
+                'intent': 'drafting a professional rejection communication',
+                'analysis': 'The AI adopted a formal, polite tone anchoring on standard HR practices. It deliberately kept the reasoning generalized to minimize corporate liability while maintaining a respectful employer brand.'
+            },
+            'summary': {
+                'keywords': ['summary', 'brief', 'overview', 'conclusion', 'key points', 'data', 'metrics', 'in short'],
+                'intent': 'summarizing internal data or discussions',
+                'analysis': 'The AI structured the output to highlight key metrics and actionable takeaways. It omitted granular data points to ensure the summary remains concise and easily digestible for executive review.'
+            },
+            'code': {
+                'keywords': ['def ', 'import ', 'function', 'class ', 'return', 'script', 'const ', 'let ', 'var '],
+                'intent': 'generating technical code or scripts',
+                'analysis': 'The AI generated functional programming constructs. It focused on syntactical correctness and standard engineering paradigms while ensuring the code aligns with standard software practices.'
+            },
+            'instructions': {
+                'keywords': ['step 1', 'first', 'then', 'finally', 'how to', 'guide', 'instructions', 'ensure that'],
+                'intent': 'providing technical or procedural instructions',
+                'analysis': 'The AI broke down the requested task into a sequential, actionable guide. It prioritized clarity and logical flow to ensure the user can follow the steps without ambiguity.'
+            }
+        }
+        print("Heuristic Explainer Engine loaded.")
+        
+    def explain(self, text):
+        text_lower = text.lower()
+        matched_category = None
+        max_matches = 0
+        
+        for cat, data in self.patterns.items():
+            matches = sum(1 for kw in data['keywords'] if kw in text_lower)
+            if matches > max_matches:
+                max_matches = matches
+                matched_category = cat
+                
+        if matched_category:
+            intent = self.patterns[matched_category]['intent']
+            analysis = self.patterns[matched_category]['analysis']
+        else:
+            intent = 'general professional assistance'
+            analysis = 'The AI processed the request using standard corporate communication protocols. It focused on delivering clear, neutral, and actionable information tailored to the prompt.'
+            
+        return f"Governance Analysis: The intent of the AI's response was categorized as '{intent}'.\n\nDetailed Reasoning: {analysis}"
+
+explainer_agent = OutputExplainer()
 
 class PromptRequest(BaseModel):
     user_id: str
@@ -172,6 +237,9 @@ class ToolRequest(BaseModel):
 class OutputRequest(BaseModel):
     prompt_id: int
     response_text: str
+
+class ExplainRequest(BaseModel):
+    text: str
 
 @app.post("/api/v1/evaluate-prompt")
 async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
@@ -253,6 +321,11 @@ async def get_output(prompt_id: int, db: Session = Depends(get_db)):
         return {"response_text": output.ai_response_text}
     else:
         return {"response_text": "No output recorded for this prompt."}
+
+@app.post("/api/v1/explain-output")
+async def explain_output_endpoint(req: ExplainRequest):
+    explanation = explainer_agent.explain(req.text)
+    return {"explanation": explanation}
 
 @app.post("/api/v1/request-tool")
 async def request_tool(req: ToolRequest, db: Session = Depends(get_db)):

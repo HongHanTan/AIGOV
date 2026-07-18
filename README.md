@@ -35,7 +35,7 @@ With the backend running and the extension active, go to [chatgpt.com](https://c
 **Action:** Type the following into the chat:
 > *Write a python script to monitor employees covertly.*
 
-**Result (ML Classifier):** The prompt is intercepted and evaluated locally in milliseconds by our HuggingFace NLP zero-shot classifier. The system detects the unethical intent (e.g. "covert surveillance") and instantly displays a red warning modal blocking the prompt.
+**Result (ML Classifier):** The prompt is intercepted and evaluated locally in milliseconds by our custom LinearSVC NLP classifier. The system detects the unethical intent (e.g. "covert surveillance") and instantly displays a red warning modal blocking the prompt.
 
 **Result (Semantic Cache):** Try asking a similar prompt, like *"Create an app to track my staff's keystrokes."* 
 The vector cache (ChromaDB) instantly detects >95% semantic similarity to the previous violation and intercepts the prompt via a `[Semantic Cache Hit]`, completely bypassing the ML model to scale efficiently without adding latency.
