@@ -104,27 +104,39 @@ class RiskMonitoringAgents:
         system_prompt = """Evaluate the user's input for bias, unethical behavior, or covert monitoring. 
         Strictly return a JSON object: {"is_ethical": boolean, "reason": "string"}."""
         
+        fallback_keywords = ["monitor employees covertly", "bypass security", "steal data", "hack"]
+        def check_fallback():
+            if any(keyword in text.lower() for keyword in fallback_keywords):
+                return False, "Offline Fallback: Unethical keywords detected while AI Ethics Agent is offline."
+            return True, "Safe (Ollama fallback)"
+            
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "http://localhost:11434/api/generate",
+                    "http://127.0.0.1:11434/api/generate",
                     json={
                         "model": "llama3", # default ollama model assumption
                         "prompt": f"System: {system_prompt}\n\nUser: {text}",
                         "stream": False,
                         "format": "json"
                     },
-                    timeout=10.0
+                    timeout=60.0
                 )
                 if response.status_code == 200:
                     data = response.json().get("response", "")
                     parsed = json.loads(data)
-                    return parsed.get("is_ethical", True), parsed.get("reason", "Safe")
+                    
+                    is_ethical = parsed.get("is_ethical", True)
+                    # Correctly handle if the LLM hallucinated a string instead of a true boolean
+                    if isinstance(is_ethical, str):
+                        is_ethical = is_ethical.lower() != "false"
+                        
+                    return is_ethical, parsed.get("reason", "Safe")
                 else:
-                    return True, "Safe (Ollama error)"
+                    return check_fallback()
         except Exception as e:
             print(f"Ollama error: {e}")
-            return True, "Safe (Ollama unreachable)"
+            return check_fallback()
 
 guardrail = DataProtectionGuardrail()
 agents = RiskMonitoringAgents()
@@ -214,6 +226,14 @@ async def log_output(req: OutputRequest, db: Session = Depends(get_db)):
     db.add(out_log)
     db.commit()
     return {"message": "Output logged successfully"}
+
+@app.get("/api/v1/get-output/{prompt_id}")
+async def get_output(prompt_id: int, db: Session = Depends(get_db)):
+    output = db.query(OutputLog).filter(OutputLog.prompt_id == prompt_id).first()
+    if output:
+        return {"response_text": output.ai_response_text}
+    else:
+        return {"response_text": "No output recorded for this prompt."}
 
 @app.post("/api/v1/request-tool")
 async def request_tool(req: ToolRequest, db: Session = Depends(get_db)):

@@ -79,7 +79,10 @@
                 <td>{{ log.url }}</td>
                 <td><span class="badge {{ log.status }}">{{ log.status }}</span></td>
                 <td>{{ log.prompt_text[:60] }}...</td>
-                <td><button style="background-color: #747d8c;" onclick="deleteLog('{{ log.id }}')">Delete</button></td>
+                <td>
+                    <button style="background-color: #1e90ff;" onclick="viewOutput('{{ log.id }}')">Output</button>
+                    <button style="background-color: #747d8c;" onclick="deleteLog('{{ log.id }}')">Delete</button>
+                </td>
             </tr>
             {% else %}
             <tr>
@@ -133,6 +136,26 @@ async function clearLogs() {
     if (!confirm("Are you sure you want to clear all logs?")) return;
     const res = await fetch("/api/v1/clear-logs", { method: "POST" });
     if (res.ok) window.location.reload();
+}
+
+async function viewOutput(prompt_id) {
+    const res = await fetch(`/api/v1/get-output/${prompt_id}`);
+    if (res.ok) {
+        const data = await res.json();
+        // Create a simple overlay modal
+        const modal = document.createElement("div");
+        modal.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;justify-content:center;align-items:center;z-index:1000;";
+        modal.innerHTML = `
+            <div style="background:white;padding:20px;border-radius:8px;width:600px;max-width:90%;max-height:80%;overflow-y:auto;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                <h3 style="margin-top:0;">AI Output Log</h3>
+                <pre style="white-space:pre-wrap;background:#f4f7f6;padding:15px;border-radius:4px;font-size:13px;border:1px solid #ddd;">${data.response_text}</pre>
+                <button onclick="this.parentElement.parentElement.remove()" style="background:#ff4757;margin-top:10px;">Close</button>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    } else {
+        alert("Failed to fetch output.");
+    }
 }
 </script>
 </body>
