@@ -84,19 +84,27 @@ class DataProtectionGuardrail:
         self.secret_project = "project titan"
 
     def redact_prompt(self, text):
-        redacted_text = self.pii_pattern.sub("[REDACTED_EMAIL]", text)
-        redacted_text = re.sub(self.secret_project, "[REDACTED_COMPANY_SECRET]", redacted_text, flags=re.IGNORECASE)
+        redacted_text = text
+        triggers = []
         
-        has_sensitive = (redacted_text != text)
+        if self.pii_pattern.search(redacted_text):
+            redacted_text = self.pii_pattern.sub("[REDACTED_EMAIL]", redacted_text)
+            triggers.append("unencrypted client contact details")
+            
+        if re.search(self.secret_project, redacted_text, flags=re.IGNORECASE):
+            redacted_text = re.sub(self.secret_project, "[REDACTED_COMPANY_SECRET]", redacted_text, flags=re.IGNORECASE)
+            triggers.append("proprietary project code")
         
         if nlp:
             doc = nlp(redacted_text)
             for ent in doc.ents:
                 if ent.label_ in ["PERSON", "ORG", "GPE", "LOC", "FAC"]:
                     redacted_text = redacted_text.replace(ent.text, f"[REDACTED_{ent.label_}]")
-                    has_sensitive = True
+                    if "personally identifiable information" not in triggers:
+                        triggers.append("personally identifiable information")
                     
-        return redacted_text, has_sensitive
+        has_sensitive = len(triggers) > 0
+        return redacted_text, has_sensitive, triggers
 
 import hashlib
 import chromadb
@@ -140,7 +148,8 @@ class RiskMonitoringAgents:
                 cached_metadata = results['metadatas'][0][0]
                 is_ethical = cached_metadata['is_ethical'] == "true"
                 reason = cached_metadata['reason']
-                return is_ethical, f"[Semantic Cache Hit] {reason}"
+                triggers = ["a semantic match to a previously blocked ethical violation"]
+                return is_ethical, reason, triggers
 
         # 2. Fast Custom ML Classifier
         if self.classifier:
@@ -148,13 +157,23 @@ class RiskMonitoringAgents:
             if prediction != "safe corporate request":
                 is_ethical = False
                 reason = f"Custom ML Classifier blocked: '{prediction}'"
+                
+                # Map to human readable trigger
+                if "surveillance" in prediction.lower() or "monitor" in prediction.lower():
+                    triggers = ["covert employee surveillance keywords"]
+                elif "bias" in prediction.lower():
+                    triggers = ["discriminatory or biased language"]
+                else:
+                    triggers = [f"content flagged as {prediction}"]
             else:
                 is_ethical = True
                 reason = "Custom ML Classifier: Safe"
+                triggers = []
         else:
             # Fallback if model failed to load
             is_ethical = True
             reason = "Safe (No ML Model Loaded)"
+            triggers = []
 
         # 3. Store in Cache
         doc_id = hashlib.sha256(text.encode()).hexdigest()
@@ -164,7 +183,7 @@ class RiskMonitoringAgents:
             ids=[doc_id]
         )
         
-        return is_ethical, reason
+        return is_ethical, reason, triggers
         return is_ethical, reason
         return is_ethical, reason
         return is_ethical, reason
@@ -241,6 +260,19 @@ class OutputRequest(BaseModel):
 class ExplainRequest(BaseModel):
     text: str
 
+def generate_plain_explanation(action, triggers):
+    if not triggers:
+        return f"This request was {action}."
+    
+    if len(triggers) == 1:
+        trigger_str = triggers[0]
+    elif len(triggers) == 2:
+        trigger_str = f"{triggers[0]} and {triggers[1]}"
+    else:
+        trigger_str = ", ".join(triggers[:-1]) + f", and {triggers[-1]}"
+        
+    return f"This request was {action} because it contained {trigger_str}."
+
 @app.post("/api/v1/evaluate-prompt")
 async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
     # 1. Check ToolRegistry
@@ -262,15 +294,17 @@ async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
             return {"status": "blocked", "reason": f"Tool at {req.url} has been explicitly blocked by IT.", "safe_prompt": "", "prompt_id": log.id}
 
     # 2. Evaluate Ethics (Offline LLM)
-    is_ethical, agent_reason = await agents.evaluate_ethics_and_bias(req.text)
+    is_ethical, agent_reason, ethics_triggers = await agents.evaluate_ethics_and_bias(req.text)
     if not is_ethical:
         log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="blocked_ethics")
         db.add(log)
         db.commit()
-        return {"status": "blocked", "reason": f"Ethics Agent: {agent_reason}", "safe_prompt": "", "prompt_id": log.id}
+        
+        nlg_reason = generate_plain_explanation("blocked", ethics_triggers)
+        return {"status": "blocked", "reason": nlg_reason, "safe_prompt": "", "prompt_id": log.id}
 
     # 3. Granular Data Routing
-    safe_text, has_sensitive = guardrail.redact_prompt(req.text)
+    safe_text, has_sensitive, data_triggers = guardrail.redact_prompt(req.text)
     
     if has_sensitive:
         if tool.clearance_level == "CONFIDENTIAL":
@@ -284,9 +318,11 @@ async def evaluate_prompt(req: PromptRequest, db: Session = Depends(get_db)):
             log = AuditLog(timestamp=str(datetime.datetime.now()), user_id=req.user_id, url=req.url, prompt_text=req.text, status="redacted_data")
             db.add(log)
             db.commit()
+            
+            nlg_reason = generate_plain_explanation("altered", data_triggers)
             return {
                 "status": "warning", 
-                "reason": "Data Routing Guardrail: Sensitive enterprise data detected. This tool is only cleared for PUBLIC data. Please use the redacted prompt.", 
+                "reason": nlg_reason, 
                 "safe_prompt": safe_text,
                 "prompt_id": log.id
             }
