@@ -5,3 +5,6 @@ spacy
 sqlalchemy
 jinja2
 httpx
+chromadb
+transformers
+torch
